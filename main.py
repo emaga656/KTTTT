@@ -1,40 +1,57 @@
 import os
-
-import psycopg
+import psycopg2
+import redis
 from fastapi import FastAPI, HTTPException
 
-from celery_app import background_task
+app = FastAPI(title="KT: Контейнеризация и автоматический деплой")
 
-app = FastAPI(title="FastAPI Docker Demo", version="1.0.0")
+
+def check_database() -> bool:
+    connection = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=3)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            return cursor.fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+def check_redis() -> bool:
+    client = redis.Redis.from_url(
+        os.environ["CELERY_BROKER"],
+        socket_connect_timeout=3,
+        socket_timeout=3,
+    )
+    return bool(client.ping())
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/app_db")
+REDIS_URL = os.getenv("REDIS_URL")
+
 
 
 @app.get("/")
-def home():
-    return {"message": "FastAPI работает в Docker!"}
+def root():
+    return {"message": "Hello from KT!", "status": "running"}
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/health/db")
-def database_health():
-    database_url = os.getenv(
-        "DATABASE_URL",
-        "postgresql://postgres:secret@localhost:5432/appdb",
-    )
+def health_check():
+    status = {"app": "ok", "db": "error", "redis": "error"}
     try:
-        with psycopg.connect(database_url, connect_timeout=3) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
-        return {"database": "connected"}
-    except Exception:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.close()
+        status["db"] = "connected"
+    except Exception as e:
+        status["db_error"] = str(e)
 
+    try:
+        r = redis.Redis.from_url(REDIS_URL, socket_connect_timeout=2)
+        if r.ping():
+            status["redis"] = "connected"
+    except Exception as e:
+        status["redis_error"] = str(e)
 
-@app.post("/tasks")
-def create_task():
-    task = background_task.delay("Hello from Docker!")
-    return {"task_id": task.id, "status": "Задача отправлена"}
+    if status["db"] != "connected" or status["redis"] != "connected":
+        raise HTTPException(status_code=503, detail=status)
+        
+    return status
