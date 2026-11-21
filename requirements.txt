@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 celery
 redis
-psycopg[binary]
+psycopg2-binary
 pytest
 httpx
+sqlalchemy
